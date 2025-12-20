@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+langgraph
+pydantic
+sse-starlette
+httpx
+crawl4ai
+lancedb
+litellm
+sqlmodel
+loguru
+pydantic_settings
+lancedb
+langchain-text-splitters
+langgraph-checkpoint-sqlite
+numpy

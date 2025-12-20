@@ -1,0 +1,1189 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.claude/
+  settings.local.json
+app/
+  api/
+    __init__.py
+    history.py
+    research.py
+  core/
+    __init__.py
+    config.py
+    llm.py
+  modules/
+    insight/
+      __init__.py
+      prompts.py
+    knowledge/
+      __init__.py
+      rdb.py
+      vector.py
+    orchestrator/
+      __init__.py
+      graph.py
+      state.py
+    perception/
+      __init__.py
+      crawler.py
+      search.py
+    __init__.py
+  __init__.py
+  worker.py
+data/
+  lancedb/
+    research_context.lance/
+      _transactions/
+        0-168820f8-6de7-4191-bf5c-736cad8579e5.txn
+        1-86c8d8de-cc33-49c5-9b31-4022509af63c.txn
+        10-299f8de6-2eff-48d5-920a-52c84f774229.txn
+        11-81a498a3-5a26-42cb-a181-5f8941b71ba1.txn
+        12-8307f7f1-2a17-4e4a-a3f2-96230d86c298.txn
+        13-b6197cde-809f-4652-97ec-096cdacba8f6.txn
+        14-68da54f3-dcd7-4500-a4ca-99be0b448eaa.txn
+        2-b2f083f5-7ba2-447a-af3b-051b1d64952c.txn
+        3-0ee3085a-ca25-49db-b4f0-0b25f640e7a1.txn
+        4-e0c86ffa-b724-473d-b2de-1db109c1f881.txn
+        5-2e435c94-9841-4e35-8b7c-e8c93f3cd6d1.txn
+        6-91991850-eafd-4fc1-aa80-ef74de15cd94.txn
+        7-2bb04635-d54e-465d-b216-4ac6feef16d2.txn
+        8-6ef070e8-86b8-4d3f-ac07-be281e9445af.txn
+        9-b9509433-11f6-42d8-91fb-a4328d2db128.txn
+      _versions/
+        1.manifest
+        10.manifest
+        11.manifest
+        12.manifest
+        13.manifest
+        14.manifest
+        15.manifest
+        2.manifest
+        3.manifest
+        4.manifest
+        5.manifest
+        6.manifest
+        7.manifest
+        8.manifest
+        9.manifest
+      data/
+        0000011010010110101000111731dd48b49b388455cc291ae8.lance
+        001011000011011100001000196f114c15b6db8236cab28dae.lance
+        001101010100101000101100be3ee0423ca1d1770735c1402e.lance
+        001101010111111011111110b514dd4b339de7b4996372f8f0.lance
+        0100000101111000010111015a10a0443fbbb1b4df16f8d889.lance
+        010010001101011010000110a7019e4f9692bc451c3162d790.lance
+        0100111110111001011010007898ae4009bcfbd2582d3515e1.lance
+        0101100100101011000000119cb0ba4630b7f0111a8ecedc25.lance
+        01100000110111110101011088c2d944fc898efb1438dc93d0.lance
+        011101010001010111101101b3b57148a5b89bb495c00f1316.lance
+        10000100100010011101101004b4da49109cb2e8683d622684.lance
+        100111001011110000101100bcbd224ed88aced75fe8f80543.lance
+        110111110011111001111101d6f4bb4cb0a3f94d698d2410b4.lance
+        111101000101010101100010cc09d64642ae68aca24b4f68e3.lance
+main.py
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".claude/settings.local.json">
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(python:*)",
+      "Bash(tree:*)"
+    ]
+  }
+}
+</file>
+
+<file path="app/api/__init__.py">
+"""
+API 路由模块
+
+提供RESTful API接口，包括：
+    - research: 研究相关API接口
+    - history: 历史记录API接口
+
+本模块封装了所有对外暴露的API路由，
+通过FastAPI框架实现高效的网络请求处理。
+
+使用示例:
+    from app.api import research, history
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from . import research, history
+
+# 明确列出所有公开的子模块
+__all__ = [
+    "research",
+    "history",
+]
+</file>
+
+<file path="app/api/research.py">
+# app/api/research.py
+from fastapi import APIRouter
+from sse_starlette.sse import EventSourceResponse
+from app.modules.orchestrator.graph import build_graph
+import asyncio, json, uuid
+
+router = APIRouter()
+graph = build_graph()
+
+@router.get("/stream")
+async def stream_research(topic: str):
+    # 生成唯一会话 ID
+    thread_id = str(uuid.uuid4())
+    # 配置 config
+    config = {"configurable": {"thread_id": thread_id}}
+    """流式输出 Agent 的思考过程"""
+    async def event_generator():
+        # 初始化状态
+        inputs = {
+            "topic": topic,
+            "iteration_count": 0,
+            "max_iterations": 3,
+            "search_queries": [],
+            "web_results": []
+        }
+        
+        # 运行图谱 (astream 会产生每个步骤的事件)
+        async for event in graph.astream(inputs, config=config):
+            # event 的格式通常是 {"node_name": {updated_state_keys}}
+            for node_name, state_update in event.items():
+                
+                # 构造发送给前端的消息
+                payload = {
+                    "step": node_name,
+                    "data": state_update
+                }
+
+                json_str = json.dumps(
+                        payload, 
+                        default=str, 
+                        ensure_ascii=False  # <--- 关键！让中文原样输出
+                    )
+                
+                # SSE 格式: data: ...
+                yield {
+                    "event": "update",
+                    "data": json_str
+                }
+                
+                # 稍微让子弹飞一会儿，方便观察 (生产环境去掉)
+                await asyncio.sleep(0.5)
+
+        yield {"event": "finish", "data": "DONE"}
+
+    return EventSourceResponse(event_generator())
+</file>
+
+<file path="app/core/__init__.py">
+"""
+核心配置模块
+
+提供系统核心配置和LLM调用接口。
+
+主要组件:
+    - simple_llm_call: 通用LLM调用接口
+        支持DeepSeek、OpenAI、Claude、Ollama等多种模型
+        通过LiteLLM提供统一的调用方式
+
+使用示例:
+    from app.core import simple_llm_call
+
+    response = await simple_llm_call("Hello, world!")
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from .llm import simple_llm_call
+
+__all__ = ["simple_llm_call"]
+</file>
+
+<file path="app/core/config.py">
+# app/core/config.py
+from pydantic_settings import BaseSettings
+import os
+
+class Settings(BaseSettings):
+    # --- 基础服务配置 ---
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 23800
+    
+    # --- 路径配置 (自动转换为绝对路径或保持相对路径) ---
+    # 知识库向量数据路径
+    LANCEDB_PATH: str = "./data/lancedb"
+    # LangGraph 检查点数据库路径
+    CHECKPOINT_DB_PATH: str = "./data/checkpoints.db"
+    
+    # --- 外部依赖配置 ---
+    # SearXNG 搜索服务地址
+    SEARXNG_BASE_URL: str = "http://localhost:8888/search"
+    
+    # --- 模型配置 ---
+    # 如果 .env 中没有设置，读取系统环境变量；如果都没有，则为 None
+    DEEPSEEK_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+
+    class Config:
+        # 指定加载 .env 文件
+        env_file = ".env"
+        # 忽略多余的变量
+        extra = "ignore"
+
+# 实例化全局配置对象
+settings = Settings()
+
+# 自动确保关键数据目录存在 (可选，增强健壮性)
+os.makedirs(os.path.dirname(settings.CHECKPOINT_DB_PATH), exist_ok=True)
+os.makedirs(settings.LANCEDB_PATH, exist_ok=True)
+</file>
+
+<file path="app/core/llm.py">
+from litellm import completion
+import os
+from dotenv import load_dotenv
+
+# 加载 .env 环境变量
+load_dotenv()
+
+async def simple_llm_call(
+    prompt: str, 
+    model: str = "deepseek/deepseek-chat", # 默认改为 DeepSeek V3
+    temperature: float = 0.7
+) -> str:
+    """
+    通用 LLM 调用接口，支持 DeepSeek, OpenAI, Claude, Ollama 等
+    """
+    
+    # 打印当前使用的模型，方便调试
+    print(f"🤖 [LLM Call] Model: {model}")
+
+    try:
+        # LiteLLM 会自动根据 model 前缀识别供应商
+        # deepseek/deepseek-chat -> 自动映射到 DeepSeek API
+        # ollama/deepseek-r1 -> 自动映射到本地 Ollama
+        
+        response = completion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            # 如果是 DeepSeek API，不需要手动设 base_url，LiteLLM 内置了支持
+            # 如果是 Ollama，LiteLLM 默认连接 http://localhost:11434
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        print(f"❌ [LLM Error] {model} failed: {str(e)}")
+        return f"Error generation response with {model}. Details: {str(e)}"
+
+# --- 使用说明 ---
+# 1. DeepSeek API: 
+#    model="deepseek/deepseek-chat" (V3)
+#    model="deepseek/deepseek-reasoner" (R1)
+#
+# 2. 本地 DeepSeek (通过 Ollama):
+#    model="ollama/deepseek-r1"
+#
+# 3. OpenAI:
+#    model="gpt-4o"
+</file>
+
+<file path="app/modules/insight/__init__.py">
+"""
+洞察模块 - 洞察生成和Prompt管理
+
+负责生成和管理智能洞察，以及为LLM提供结构化的提示词模板。
+
+本模块的核心功能：
+    - 设计和管理Prompt模板
+    - 根据不同场景生成定制化提示词
+    - 优化LLM输入以获得更好的输出质量
+    - 生成深度分析和洞察报告
+
+子模块:
+    - prompts: Prompt模板管理
+        提供各种场景下的提示词模板
+        包括研究、分析、总结、创作等多种类型
+        支持动态模板参数化和模板链式组合
+
+主要功能:
+    1. 智能Prompt模板库
+        - 研究类模板：深度研究、对比分析
+        - 总结类模板：摘要生成、要点提取
+        - 创作类模板：内容创作、创意生成
+        - 分析类模板：数据分析、趋势洞察
+
+    2. 动态模板生成
+        - 根据输入参数生成定制化提示词
+        - 支持模板嵌套和组合
+        - 智能参数填充和验证
+
+    3. 提示词优化
+        - 自动优化提示词结构
+        - 提供提示词质量评估
+        - 支持A/B测试和迭代改进
+
+    4. 洞察生成
+        - 基于收集的数据生成深度洞察
+        - 提供多维度分析结果
+        - 生成可解释的分析报告
+
+使用示例:
+    from app.modules.insight import prompts
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from . import prompts
+
+# 明确列出所有公开的子模块
+__all__ = [
+    "prompts",
+]
+</file>
+
+<file path="app/modules/insight/prompts.py">
+# app/modules/insight/prompts.py
+from textwrap import dedent
+
+class ResearchPrompts:
+    """
+    统一管理系统中的所有 Prompt 模板。
+    使用 dedent 去除缩进，保持 Prompt 干净。
+    """
+
+    @staticmethod
+    def planner_initial(topic: str) -> str:
+        """[规划者] 第一轮：广度优先规划"""
+        return dedent(f"""
+            用户想研究 '{topic}'。
+            请生成 1 个最适合入门或获取宏观数据的搜索引擎关键词。
+            
+            要求：
+            1. 关键词要精准，利于搜索引擎理解。
+            2. 只返回关键词本身，不要包含解释或引号。
+        """).strip()
+
+    @staticmethod
+    def planner_gap_driven(topic: str, gap: str) -> str:
+        """[规划者] 后续轮次：基于缺口的深度规划"""
+        return dedent(f"""
+            研究主题: {topic}
+            目前已有的分析指出缺失信息(Gap): "{gap}"
+            
+            任务：
+            请生成 1 个**非常具体**的搜索关键词，专门用来挖掘上述缺失的信息。
+            
+            示例策略：
+            - 如果缺数据，搜索词应包含 "statistics", "data", "report", "2024" 等。
+            - 如果缺技术细节，搜索词应包含 "architecture", "specs", "whitepaper" 等。
+            
+            要求：
+            只返回关键词本身，不要包含引号。
+        """).strip()
+
+    @staticmethod
+    def analyst_reasoning(topic: str, context: str) -> str:
+        """[分析师] RAG 分析与 Gap 识别 (适用于 DeepSeek R1)"""
+        return dedent(f"""
+            你是一个严谨的深度研究员。基于以下【已核实的知识库片段】进行分析。
+            
+            【已核实信息】：
+            {context}
+            
+            【任务】：
+            1. 综合目前关于 '{topic}' 的所有信息，写一段深度分析（Draft）。
+            2. 批判性地指出：我们还**缺少**什么关键数据或视角？(Gap Analysis)。
+            
+            【输出要求】：
+            - 如果信息已经非常充分，能够回答 '{topic}' 的核心问题，Gap 请回复 "无"。
+            - 如果信息不足，请在 Gap 部分明确指出下一步需要搜什么（例如：“缺乏具体的2024年Q4成本数据”）。
+            - 保持客观、中立，用数据说话。
+        """).strip()
+
+    @staticmethod
+    def publisher_final_report(topic: str, context: str) -> str:
+        """[出版者] 最终报告生成"""
+        return dedent(f"""
+            你是一个专业的行业分析师。请根据以下【已核实的信息片段】，撰写一份关于 '{topic}' 的深度研究报告。
+            
+            【信息片段】：
+            {context}
+            
+            【报告要求】：
+            1. 格式：Markdown。
+            2. 结构：
+               - 📑 **摘要** (Executive Summary)
+               - 🧭 **目录**
+               - 📖 **正文** (分章节，逻辑清晰)
+               - 📊 **结论与展望**
+            3. **引用标注** (关键)：在正文中引用具体数据或观点时，必须在句末标注来源，格式为 [Source: URL]。
+            4. 语气：客观、专业、详实。
+            5. 内容：重点回答用户最初的问题，并整合之前分析中发现的衍生观点。
+        """).strip()
+
+# 实例化（如果需要单例，或者直接用静态方法）
+prompts = ResearchPrompts()
+</file>
+
+<file path="app/modules/knowledge/__init__.py">
+"""
+知识引擎模块 - 数据存储、索引和检索
+
+负责系统中所有数据的持久化、索引和管理。
+
+本模块提供多层次的数据存储解决方案：
+    - 向量数据库存储：用于语义搜索和相似度匹配
+    - 关系型数据库存储：用于结构化数据和事务管理
+    - 混合存储模式：结合两种数据库的优势
+
+子模块:
+    - vector: 向量数据库 (LanceDB)
+        提供高效向量存储和相似度检索
+        支持文本嵌入、图像向量等多模态数据
+        实现语义搜索和智能推荐功能
+
+    - rdb: 关系型数据库 (SQLModel)
+        提供结构化数据存储和管理
+        支持复杂查询、事务处理和数据完整性
+        管理用户数据、系统配置等结构化信息
+
+主要功能:
+    1. 多模态数据存储 (文本、图像、向量)
+    2. 高效相似度搜索和检索
+    3. 结构化数据管理和查询
+    4. 数据索引优化
+    5. 数据备份和恢复
+    6. 支持水平扩展
+
+数据流:
+    感知模块收集数据 → 知识模块存储和索引 → 其他模块检索和使用
+
+使用示例:
+    from app.modules.knowledge import vector, rdb
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from . import vector, rdb
+
+# 明确列出所有公开的子模块
+__all__ = [
+    "vector",
+    "rdb",
+]
+</file>
+
+<file path="app/modules/knowledge/vector.py">
+import lancedb,os
+from typing import List, Dict
+from litellm import embedding
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import pyarrow as pa
+from app.core.config import settings
+
+# 1. 初始化 LanceDB (本地文件模式)
+DB_PATH = settings.LANCEDB_PATH
+os.makedirs(DB_PATH, exist_ok=True)
+db = lancedb.connect(DB_PATH)
+
+# 定义表结构 (Schema)
+# vector 维度取决于你使用的模型，OpenAI text-embedding-3-small 是 1536 维
+schema = pa.schema([
+    pa.field("vector", pa.list_(pa.float32(), 768)),
+    pa.field("text", pa.string()),
+    pa.field("source", pa.string()),
+    pa.field("chunk_id", pa.string())
+])
+
+def get_embedding(text: str) -> List[float]:
+    """
+    使用本地 Ollama 的 nomic-embed-text 获取向量
+    针对 Log 结构: response['data'][0]['embedding']
+    """
+    try:
+        response = embedding(
+            model="ollama/nomic-embed-text", 
+            input=[text]
+        )
+        return response.data[0]['embedding']
+
+    except Exception as e:
+        print(f"❌ Embedding Error (Ollama): {e}")
+        return [0.0] * 768
+
+class KnowledgeBase:
+    def __init__(self, table_name: str = "research_context"):
+        self.table_name = table_name
+        # 如果表不存在则创建
+        try:
+            self.table = db.open_table(table_name)
+        except:
+            self.table = db.create_table(table_name, schema=schema)
+
+    def add_documents(self, documents: List[Dict]):
+        """
+        接收爬取结果 -> 切片 -> 向量化 -> 存入
+        """
+        # nomic-embed-text 支持 8192 context，我们可以稍微把 chunk 切大一点
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1200, 
+            chunk_overlap=200
+        )
+        
+        data_to_insert = []
+        
+        print(f"💾 [Knowledge] Processing {len(documents)} docs with nomic-embed-text...")
+        
+        for doc in documents:
+            # 简单的清洗，去除过多空行
+            clean_content = doc["content"].replace("\n\n\n", "\n")
+            chunks = splitter.split_text(clean_content)
+            
+            for idx, chunk in enumerate(chunks):
+                vec = get_embedding(chunk)
+                # 简单校验维度，防止 Ollama 偶尔返回空
+                if len(vec) == 768:
+                    data_to_insert.append({
+                        "vector": vec,
+                        "text": chunk,
+                        "source": doc.get("source", "unknown"),
+                        "chunk_id": f"{doc.get('url', 'unknown')}_{idx}"
+                    })
+        
+        if data_to_insert:
+            # mode="append" 追加模式
+            self.table.add(data_to_insert)
+            print(f"✅ [Knowledge] Inserted {len(data_to_insert)} chunks (Dim: 768)")
+
+    def search(self, query: str, limit: int = 5) -> str:
+        """
+        语义检索
+        """
+        print(f"🔍 [Retrieval] Searching for: {query[:30]}...")
+        query_vec = get_embedding(query)
+        
+        # 向量搜索
+        results = self.table.search(query_vec).limit(limit).to_list()
+        
+        context = ""
+        for item in results:
+            context += f"--- Source: {item['source']} ---\n{item['text']}\n\n"
+            
+        print(f"✅ [Retrieval] Found {len(results)} relevant chunks")
+        return context
+</file>
+
+<file path="app/modules/orchestrator/__init__.py">
+"""
+编排器模块 - 工作流编排器
+
+使用LangGraph实现状态机和工作流编排。
+
+本模块负责：
+    - 定义和管理复杂的工作流状态
+    - 实现任务间的依赖关系和调度
+    - 协调各个模块之间的交互
+    - 提供可扩展的状态转换逻辑
+
+子模块:
+    - graph: 图结构和工作流定义
+        包含LangGraph节点和边的定义
+
+    - state: 状态管理
+        定义共享状态结构和状态转换逻辑
+
+工作流程:
+    1. 初始化工作流状态
+    2. 通过graph定义执行路径
+    3. 使用state跟踪和管理状态变化
+    4. 协调各模块按序执行
+
+使用示例:
+    from app.modules.orchestrator import graph, state
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from . import graph, state
+
+# 的子明确列出所有公开模块
+__all__ = [
+    "graph",
+    "state",
+]
+</file>
+
+<file path="app/modules/orchestrator/graph.py">
+# app/modules/orchestrator/graph.py
+
+from langgraph.graph import StateGraph, END
+from typing import Literal
+import json,sqlite3
+
+# 1. 引入同级或跨级模块 (这是关联的关键)
+from app.modules.orchestrator.state import ResearchState
+from app.modules.perception.search import search_searxng
+from app.modules.perception.crawler import crawl_urls
+from app.core.llm import simple_llm_call
+from app.modules.knowledge.vector import KnowledgeBase
+from langgraph.checkpoint.sqlite import SqliteSaver
+from app.modules.insight.prompts import ResearchPrompts
+from app.core.config import settings
+
+kb = KnowledgeBase()
+
+def log_step(step_name: str, content: dict):
+    """
+    格式化打印日志，支持中文显示
+    """
+    print(f"\n🚀 [Step: {step_name}]")
+    # 使用 json.dumps 格式化打印，ensure_ascii=False 让中文正常显示
+    print(json.dumps(content, indent=2, ensure_ascii=False, default=str))
+    print("-" * 50)
+
+# --- 节点逻辑实现 ---
+
+async def node_planner(state: ResearchState):
+    """
+    [规划者] 动态规划下一步
+    """
+    iteration = state["iteration_count"]
+    gap = state.get("gap_analysis", "无")
+    topic = state["topic"]
+    
+    print(f"--- [Planner] Iteration {iteration} | Gap: {gap[:50]}... ---")
+
+    # 🟢 修改点：使用统一 Prompt
+    if iteration == 0:
+        prompt = ResearchPrompts.planner_initial(topic)
+    else:
+        prompt = ResearchPrompts.planner_gap_driven(topic, gap)
+
+    search_query = await simple_llm_call(prompt, model="deepseek/deepseek-chat")
+    
+    result = {
+        "search_queries": [search_query],
+        "iteration_count": iteration + 1
+    }
+    log_step("Planner", result)
+    return result
+
+async def node_search_execute(state: ResearchState):
+    """
+    [执行者] 搜索 -> 爬取 -> 存入向量库
+    """
+    current_query = state["search_queries"][-1]
+    print(f"--- [Search] Executing: {current_query} ---")
+    
+    search_results = await search_searxng(current_query, num_results=3)
+    urls = [item["url"] for item in search_results]
+    web_contents = await crawl_urls(urls)
+    
+    if not web_contents and search_results:
+        for item in search_results:
+            web_contents.append({
+                "url": item["url"],
+                "content": item["snippet"],
+                "source": "searxng_snippet"
+            })
+
+    if web_contents:
+        print(f"💾 [Knowledge] Saving {len(web_contents)} docs...")
+        kb.add_documents(web_contents)
+            
+    return {"web_results": web_contents}
+
+async def node_analyst(state: ResearchState):
+    """
+    [分析师] RAG 检索 -> 深度思考 -> 发现盲点
+    """
+    print("--- [Analyst] RAG Retrieval & Thinking ---")
+    topic = state["topic"]
+    
+    query = state.get("gap_analysis") or topic
+    context = kb.search(query, limit=10)
+    
+    if not context:
+        context = "暂无相关信息，请尝试新的搜索。"
+
+    # 🟢 修改点：使用统一 Prompt
+    prompt = ResearchPrompts.analyst_reasoning(topic, context)
+    
+    # 使用 DeepSeek R1
+    response = await simple_llm_call(prompt, model="deepseek/deepseek-reasoner")
+    
+    # 简单解析逻辑 (保持不变)
+    gap = "无"
+    draft = response
+    if "缺少" in response or "缺乏" in response or "需要" in response:
+        gap = "Need more specific data based on analysis." 
+        
+    result = {
+        "draft_report": draft,
+        "gap_analysis": gap
+    }
+    log_step("Analyst", result)
+    return result
+
+async def node_publisher(state: ResearchState):
+    """
+    [出版者] 生成带引用的最终报告
+    """
+    print("--- [Publisher] Compiling Final Report ---")
+    topic = state["topic"]
+    
+    context = kb.search(topic, limit=20) 
+    
+    # 🟢 修改点：使用统一 Prompt
+    prompt = ResearchPrompts.publisher_final_report(topic, context)
+    
+    final_report = await simple_llm_call(prompt, model="deepseek/deepseek-reasoner")
+    
+    return {"final_report": final_report}
+
+def check_sufficiency(state: ResearchState) -> Literal["continue", "publish"]:
+    """
+    [决策逻辑] 决定继续还是结束
+    """
+    if state["iteration_count"] >= state["max_iterations"]:
+        print("--- [Decision] Max Limit Reached -> Publish ---")
+        return "publish"
+    
+    # 这里的逻辑可以写复杂点，比如判断 gap_analysis 是否为空
+    # 为了演示，我们只跑 1 轮就结束
+    if state["iteration_count"] < 1: 
+        return "continue"
+        
+    return "publish"
+
+# --- 图谱构建 ---
+
+def build_graph():
+
+    # 1. 初始化 SQLite 连接作为记忆存储
+    conn = sqlite3.connect(settings.CHECKPOINT_DB_PATH,check_same_thread=False)
+    memory = SqliteSaver(conn)
+
+    workflow = StateGraph(ResearchState)
+
+    # 注册节点
+    workflow.add_node("planner", node_planner)
+    workflow.add_node("searcher", node_search_execute)
+    workflow.add_node("analyst", node_analyst)
+    workflow.add_node("publisher", node_publisher)
+
+    # 编排流程
+    workflow.set_entry_point("planner")
+    workflow.add_edge("planner", "searcher")
+    workflow.add_edge("searcher", "analyst")
+    
+    workflow.add_conditional_edges(
+        "analyst",
+        check_sufficiency,
+        {
+            "continue": "planner",
+            "publish": "publisher"
+        }
+    )
+    
+    workflow.add_edge("publisher", END)
+
+    return workflow.compile(checkpointer=memory)
+</file>
+
+<file path="app/modules/orchestrator/state.py">
+# app/modules/orchestrator/state.py
+from typing import List, TypedDict, Annotated
+import operator
+
+# 定义一个单一的搜索结果结构
+class SearchResult(TypedDict):
+    url: str
+    content: str  # 清洗后的 Markdown
+    source: str   # 来源域名
+
+# 定义 Agent 的全局状态
+class ResearchState(TypedDict):
+    # 1. 用户输入
+    topic: str
+    
+    # 2. 迭代控制
+    iteration_count: int  # 当前递归了多少轮
+    max_iterations: int   # 最大允许轮数 (防止死循环)
+    
+    # 3. 知识积累 (使用 operator.add 实现增量更新，而非覆盖)
+    # Annotated[List, operator.add] 意味着每次返回这个字段，都会 append 到列表中
+    search_queries: Annotated[List[str], operator.add] 
+    web_results: Annotated[List[SearchResult], operator.add]
+    
+    # 4. 思考与产出
+    gap_analysis: str    # 当前还缺什么信息
+    draft_report: str    # 草稿
+    final_report: str    # 最终产出
+</file>
+
+<file path="app/modules/perception/__init__.py">
+"""
+感知模块 - 信息感知和收集
+
+负责信息的收集、感知和初步处理。
+
+本模块提供多种信息收集能力：
+    - 从互联网抓取网页内容
+    - 通过搜索引擎获取相关信息
+    - 解析和提取关键信息
+    - 对收集的数据进行预处理
+
+子模块:
+    - crawler: 网页爬虫
+        提供智能网页抓取能力
+        支持动态内容加载和反爬虫策略
+
+    - search: 搜索引擎
+        集成多种搜索引擎API
+        提供智能搜索和结果筛选功能
+
+主要功能:
+    1. 多源信息收集
+    2. 实时网页内容抓取
+    3. 智能搜索和结果优化
+    4. 数据清洗和预处理
+    5. 支持多种数据格式输出
+
+使用示例:
+    from app.modules.perception import crawler, search
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from . import crawler, search
+
+# 明确列出所有公开的子模块
+__all__ = [
+    "crawler",
+    "search",
+]
+</file>
+
+<file path="app/modules/perception/crawler.py">
+# app/modules/perception/crawler.py
+import asyncio
+from crawl4ai import AsyncWebCrawler
+from typing import List, Dict
+
+async def crawl_urls(urls: List[str]) -> List[Dict]:
+    """
+    并发抓取多个 URL 并转换为 Markdown (优化版)
+    """
+    if not urls:
+        return []
+
+    print(f"🕷️ [Crawl4AI] Starting concurrent crawl for {len(urls)} URLs...")
+    
+    # 定义单个 URL 的处理逻辑 (闭包)
+    async def process_url(crawler, url: str):
+        try:
+            # arun 是异步的，这里并发调用同一个 crawler 实例
+            result = await crawler.arun(
+                url=url,
+                bypass_cache=True,       # 总是获取最新内容
+                word_count_threshold=50  # 过滤掉内容过少的页面 (如 403/404 页)
+            )
+            
+            if result.success:
+                print(f"✅ [Crawl4AI] Scraped: {url[:30]}... ({len(result.markdown)} chars)")
+                return {
+                    "url": url,
+                    "content": result.markdown,
+                    "source": url
+                }
+            else:
+                print(f"⚠️ [Crawl4AI] Failed to scrape {url}: {result.error_message}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ [Crawl4AI] Exception for {url}: {e}")
+            return None
+
+    # 使用上下文管理器启动浏览器实例
+    async with AsyncWebCrawler(verbose=True) as crawler:
+        # 1. 创建任务列表
+        tasks = [process_url(crawler, url) for url in urls]
+        
+        # 2. 并发执行所有任务 (Gather)
+        # 如果 URL 非常多(>10)，建议使用 asyncio.Semaphore 限制并发数
+        # 但 Deep Research 每次一般只搜 3-5 个结果，直接 gather 即可
+        results_with_none = await asyncio.gather(*tasks)
+        
+        # 3. 过滤掉失败的结果 (None)
+        results = [r for r in results_with_none if r is not None]
+                
+    return results
+</file>
+
+<file path="app/modules/perception/search.py">
+# app/modules/perception/search.py
+import httpx, json
+from typing import List, Dict
+from app.core.config import settings
+
+SEARXNG_URL = settings.SEARXNG_BASE_URL
+
+async def search_searxng(query: str, num_results: int = 5) -> List[Dict[str, str]]:
+    """
+    调用本地 SearXNG 搜索，返回 URL 列表
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    params = {
+        "q": query,
+        "format": "json",
+        "engines": "quark (ZH),sogou (ZH),360search (ZH),wikimini (FR),yandex,mwmbl,currency,dictzone,libretranslate,lingva,mojeek,naver (KO),crowdview", 
+        "language": "zh-CN", # 根据需求调整
+        "safesearch": "0"
+    }
+    print(f"🔍 [Debug] Requesting: {SEARXNG_URL}")
+    print(f"🔍 [Debug] Params: {params}")
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(SEARXNG_URL, params=params, headers=headers, timeout=15.0)
+            
+            # 2. 检查 HTTP 状态码
+            if resp.status_code != 200:
+                print(f"❌ [Error] SearXNG returned status: {resp.status_code}")
+                print(f"❌ [Error] Response text: {resp.text[:200]}") # 打印前200字符看看报错信息
+                return []
+
+            # 3. 检查是否返回了 JSON
+            try:
+                data = resp.json()
+            except json.JSONDecodeError:
+                print("❌ [Error] Returned content is NOT JSON. Maybe HTML?")
+                print(f"❌ [Content Preview]: {resp.text[:200]}...")
+                return []
+
+            # 4. 检查是否有 results 字段
+            if "results" not in data:
+                print(f"⚠️ [Warning] JSON parsed but no 'results' field. Keys: {data.keys()}")
+                # 有时 SearXNG 报错会返回 {"error": "..."}
+                if "error" in data:
+                    print(f"⚠️ [SearXNG Error]: {data['error']}")
+                return []
+            
+            raw_results = data["results"]
+            print(f"✅ [Debug] Raw results count: {len(raw_results)}")
+
+            # 5. 提取有效链接
+            results = []
+            for item in raw_results[:num_results]:
+                if item.get("url", "").startswith("http"):
+                    results.append({
+                        "url": item["url"],
+                        "title": item.get("title", ""),
+                        "snippet": item.get("content", "")
+                    })
+            
+            return results
+
+        except Exception as e:
+            print(f"❌ [Exception] Connection failed: {e}")
+            return []
+</file>
+
+<file path="app/modules/__init__.py">
+"""
+核心功能模块
+
+包含五大核心模块：
+    - orchestrator: 工作流编排器
+        使用LangGraph实现状态机和工作流编排
+        负责任务调度、流程控制和模块协调
+
+    - perception: 信息感知模块
+        负责信息收集和感知
+        包括网页抓取(crawler)和搜索引擎(search)能力
+
+    - knowledge: 知识引擎
+        负责数据的存储、索引和检索
+        包括向量数据库(LanceDB)和关系型数据库(SQLModel)
+
+    - insight: 洞察模块
+        负责生成和管理Prompt模板
+        为LLM提供结构化的提示词
+
+这些模块协同工作，实现完整的AI驱动研究流程。
+
+使用示例:
+    from app.modules import (
+        orchestrator,
+        perception,
+        knowledge,
+        insight
+    )
+
+作者: ApexBridge Team
+版本: 1.0.0
+"""
+
+from . import (
+    orchestrator,
+    perception,
+    knowledge,
+    insight
+)
+
+# 明确列出所有公开的核心模块
+__all__ = [
+    "orchestrator",
+    "perception",
+    "knowledge",
+    "insight",
+]
+</file>
+
+<file path="app/__init__.py">
+"""
+Deep Research Backend - 核心应用包
+
+这是一个基于AI的深度研究系统，提供智能信息收集、分析和洞察能力。
+主要功能包括：工作流编排、信息感知、知识管理和洞察生成。
+
+主要模块:
+    - api: API路由和接口
+    - modules: 核心功能模块集合
+        - orchestrator: 工作流编排器
+        - perception: 信息感知和收集
+        - knowledge: 知识存储和检索
+        - insight: 洞察生成
+
+使用说明:
+    # 导入API模块
+    from app.api import research, history
+
+    # 导入核心功能模块
+    from app.modules import orchestrator, perception, knowledge, insight
+
+    # 导入LLM调用接口
+    from app.core import simple_llm_call
+
+作者: ApexBridge Team
+版本: 1.0.0
+许可证: MIT
+"""
+
+__version__ = "1.0.0"
+__author__ = "ApexBridge Team"
+__email__ = "team@apexbridge.ai"
+__license__ = "MIT"
+__description__ = "基于AI的深度研究系统"
+
+
+__all__ = [
+    "__version__",
+    "__author__",
+    "__email__",
+    "__license__",
+    "__description__",
+]
+</file>
+
+<file path="main.py">
+# main.py
+from fastapi import FastAPI
+from app.api.research import router as research_router
+import uvicorn
+from app.core.config import settings
+
+app = FastAPI(title="Deep Research Backend")
+
+# 注册路由
+app.include_router(research_router, prefix="/api")
+
+if __name__ == "__main__":
+    print(f"🚀 Starting server on {settings.API_HOST}:{settings.API_PORT}")
+    uvicorn.run(
+        "main:app", 
+        host=settings.API_HOST, 
+        port=settings.API_PORT, 
+        reload=True
+    )
+</file>
+
+<file path="requirements.txt">
+fastapi
+uvicorn
+langgraph
+pydantic
+sse-starlette
+httpx
+crawl4ai
+lancedb
+litellm
+sqlmodel
+loguru
+pydantic_settings
+lancedb
+langchain-text-splitters
+langgraph-checkpoint-sqlite
+numpy
+</file>
+
+</files>
