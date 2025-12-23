@@ -1,16 +1,28 @@
+# Web Framework & API
 fastapi
 uvicorn
-langgraph
-pydantic
 sse-starlette
 httpx
-crawl4ai
-lancedb
+
+# AI & Orchestration
+langgraph
+langgraph-checkpoint-sqlite
+langchain-text-splitters
 litellm
-sqlmodel
-loguru
+tenacity
+async_timeout
+
+# Data & Storage
+pydantic
 pydantic_settings
 lancedb
-langchain-text-splitters
-langgraph-checkpoint-sqlite
+pyarrow
+aiosqlite
+sqlmodel
 numpy
+
+# Crawler
+crawl4ai
+
+# Utils
+loguru
