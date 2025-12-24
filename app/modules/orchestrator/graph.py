@@ -16,8 +16,29 @@ from app.core.llm import simple_llm_call
 from app.modules.knowledge.vector import KnowledgeBase, get_embedding
 from app.modules.insight.prompts import ResearchPrompts
 from app.modules.verification.verification_agent import VerificationAgent
+from app.modules.utils.file_utils import save_markdown_report
 
 kb = KnowledgeBase()
+
+def parse_score(score_val) -> float:
+    """从 '8', '8.5', '8/10', 'Score: 8' 等格式中提取浮点数"""
+    if isinstance(score_val, (int, float)):
+        return float(score_val)
+    
+    s = str(score_val).strip()
+    # 尝试匹配数字部分 (例如从 "4.5/10" 提取 "4.5")
+    match = re.search(r"(\d+(\.\d+)?)", s)
+    if match:
+        try:
+            val = float(match.group(1))
+            # 防止提取到分母 (比如把 10 当成分数)，通常分数不会超过 10
+            # 如果提取到的数字 > 10 (例如 90分制)，归一化到 10分制
+            if val > 10: 
+                return val / 10.0
+            return val
+        except:
+            return 5.0 # 默认中位数
+    return 0.0
 
 def log_step(step_name: str, content: dict):
     """格式化打印日志"""
@@ -156,7 +177,7 @@ async def node_search_execute(state: ResearchState):
     for t in running_tasks:
         async def safe_search(task_id, query):
             try:
-                return await search_tool(query, num_results=2)
+                return await search_tool(query, settings.MAX_SEARCH_RESULTS)
             except Exception as e:
                 print(f"❌ Task {task_id} hard failed: {e}")
                 return e 
@@ -194,7 +215,7 @@ async def node_search_execute(state: ResearchState):
             dag.complete_task(task.id, result="No content found.")
 
     if all_new_docs:
-        kb.add_documents(all_new_docs)
+        kb.add_documents(all_new_docs, task_id=state["task_id"])
     
     dag.get_ready_tasks() 
 
@@ -242,11 +263,13 @@ async def node_critic(state: ResearchState):
     prompt = ResearchPrompts.critic_evaluation(topic, draft)
     response = await simple_llm_call(prompt, model=model_to_use)
     eval_data = parse_critic_json(response)
+    score_raw = eval_data.get("score", 0)
+    score = parse_score(score_raw)
     
     log: ReflectionLog = {
         "step_name": f"Iter-{state['iteration_count']}",
         "critique": eval_data.get("critique", ""),
-        "score": float(eval_data.get("score", 0)),
+        "score": score,
         "adjustment": eval_data.get("adjustment", "")
     }
     
@@ -263,6 +286,7 @@ async def node_publisher(state: ResearchState):
     
     prompt = ResearchPrompts.publisher_final_report(topic, context)
     final_report = await simple_llm_call(prompt, model=model_to_use)
+    save_markdown_report(topic, final_report)
     kb.clear_task_data(state["task_id"])
     return {"final_report": final_report}
 

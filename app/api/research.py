@@ -3,13 +3,13 @@ from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 from app.modules.orchestrator.graph import build_graph
 from app.core.config import settings
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+# 🟢 必须换回 AsyncSqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver 
 import aiosqlite
 import asyncio
 import json
 import uuid
 import traceback
-# 🟢 引入超时控制库 (请确保 pip install async_timeout)
 from async_timeout import timeout 
 
 router = APIRouter()
@@ -22,6 +22,7 @@ async def stream_research(topic: str):
     # 生成唯一会话 ID
     thread_id = str(uuid.uuid4())
     task_id = thread_id
+    
     config = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": settings.MAX_RECURSION_LIMIT
@@ -32,38 +33,42 @@ async def stream_research(topic: str):
         inputs = {
             "task_id": task_id,
             "task": topic,
-            "clarified_intent": topic, # 初始时意图等于题目
+            "clarified_intent": topic,
             "plan": [],
             "knowledge_graph": [],
             "reflection_logs": [],
             "iteration_count": 0,
             "max_iterations": 3,
-            
-            # 兼容字段
-            "topic": topic,          # 暂时保留，graph.py 还在用
-            "draft_report": "",      # 暂时保留，Analyst/Critic 交互用
-            "final_report": "",      # 暂时保留，Publisher 用
+            "topic": topic,          
+            "draft_report": "",      
+            "final_report": "",     
         }
         
         try:
-            # 🟢 使用配置化的超时时间
-            # async_timeout 上下文管理器会在超时后抛出 asyncio.TimeoutError
             async with timeout(settings.GLOBAL_TIMEOUT_SEC):
                 
-                # 1. 显式创建连接
+                print(f"🚀 [System] Starting research task: {task_id} (Async + WAL Mode)")
+                
+                # 🟢 1. 使用异步连接
                 async with aiosqlite.connect(settings.CHECKPOINT_DB_PATH) as conn:
                     
-                    # 🩹【系统性修复 / Monkey Patch】
-                    # 修复 langgraph 在 aiosqlite 上调用 is_alive 的兼容性问题
+                    # 🛡️【关键防死锁配置】开启 WAL 模式和超时设置
+                    # 这允许读写并发，彻底解决之前的卡死问题
+                    await conn.execute("PRAGMA journal_mode=WAL;")
+                    await conn.execute("PRAGMA synchronous=NORMAL;")
+                    await conn.execute("PRAGMA busy_timeout=30000;") # 等待 30s 而不是立刻报错
+                    await conn.commit()
+                    
+                    # 🩹 兼容性补丁 (防止部分版本的 LangGraph 报错)
                     setattr(conn, "is_alive", lambda: True)
                     
-                    # 2. 将修复后的连接传给 Checkpointer
+                    # 2. 创建异步 Checkpointer
                     checkpointer = AsyncSqliteSaver(conn)
                     
                     # 3. 编译图谱
                     graph = workflow_builder.compile(checkpointer=checkpointer)
                     
-                    # 4. 运行图谱 (流式)
+                    # 4. 运行图谱 (astream 必须配对异步 checkpointer)
                     async for event in graph.astream(inputs, config=config):
                         for node_name, state_update in event.items():
                             payload = {
@@ -81,10 +86,10 @@ async def stream_research(topic: str):
                                 "event": "update",
                                 "data": json_str
                             }
-                            # 缓冲一下，避免前端渲染过快卡顿
+                            # 缓冲一下
                             await asyncio.sleep(0.1)
 
-                    yield {"event": "finish", "data": "DONE"}
+                yield {"event": "finish", "data": "DONE"}
 
         except asyncio.TimeoutError:
             print(f"⏰ Task timed out after {settings.GLOBAL_TIMEOUT_SEC}s")
@@ -97,11 +102,7 @@ async def stream_research(topic: str):
         except Exception as e:
             print(f"❌ Error in stream: {e}")
             traceback.print_exc()
-            
-            error_payload = json.dumps(
-                {"error": str(e)}, 
-                ensure_ascii=False
-            )
+            error_payload = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield {"event": "error", "data": error_payload}
 
     return EventSourceResponse(event_generator())

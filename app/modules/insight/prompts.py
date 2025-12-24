@@ -104,7 +104,12 @@ class ResearchPrompts:
     def planner_dag_generation(topic: str, existing_plan_json: str = "[]") -> str:
         """[规划者] 生成或更新 DAG 任务图"""
         return dedent(f"""
-            你是一个高级项目经理。你的任务是将研究主题 '{topic}' 拆解为一份详细的执行计划。
+            你是一个拥有10年经验的**技术架构师**和项目经理。你的任务是将研究主题 '{topic}' 拆解为一份详细的执行计划。
+            
+            【核心原则 - 必须遵守】：
+            1. **寻找源头**：如果研究涉及开源项目，**必须**包含搜索其 "GitHub", "HuggingFace", "Official Docs" 的任务。不要只搜新闻！
+            2. **技术优先**：优先关注 API 接口、硬件需求（NPU/RAM）、部署架构等硬核信息。
+            3. **依赖明确**：先搜概况，再搜技术细节，最后做竞品对比。
             
             【当前计划状态】：
             {existing_plan_json}
