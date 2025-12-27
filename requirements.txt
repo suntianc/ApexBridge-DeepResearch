@@ -1,28 +1,34 @@
-# Web Framework & API
+# Web & API
 fastapi
 uvicorn
 sse-starlette
 httpx
 
+# Search Sources (New)
+arxiv
+PyGithub
+wikipedia
+
 # AI & Orchestration
 langgraph
 langgraph-checkpoint-sqlite
-langchain-text-splitters
+langchain-text-splitters  # 验证模块还在用
 litellm
 tenacity
 async_timeout
 
-# Data & Storage
+# Data
 pydantic
 pydantic_settings
-lancedb
-pyarrow
 aiosqlite
-sqlmodel
 numpy
 
-# Crawler
+# Crawler & Vision
 crawl4ai
+pymupdf
+paddlepaddle
+paddleocr>=2.7.0
+opencv-python-headless
 
 # Utils
 loguru

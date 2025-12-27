@@ -1,324 +1,291 @@
 # app/modules/orchestrator/graph.py
 
 from langgraph.graph import StateGraph, END
-import sqlite3
-import json
-import re
-import asyncio 
-import numpy as np
+import json,os
 
 from app.core.config import settings
-from app.modules.orchestrator.state import ResearchState, ReflectionLog
+from app.core.utils import parse_json_safe
+from app.modules.orchestrator.state import ResearchState
 from app.modules.orchestrator.dag import DAGManager, TaskStatus
 from app.modules.perception.search import search_generic as search_tool
 from app.modules.perception.crawler import crawl_urls
 from app.core.llm import simple_llm_call
-from app.modules.knowledge.vector import KnowledgeBase, get_embedding
-from app.modules.insight.prompts import ResearchPrompts
+# 引入新的文件存储
+from app.modules.knowledge.file_store import FileKnowledgeStore
+from app.modules.insight.prompts import prompts
 from app.modules.verification.verification_agent import VerificationAgent
 from app.modules.utils.file_utils import save_markdown_report
 
-kb = KnowledgeBase()
+# 初始化文件存储
+kb = FileKnowledgeStore()
 
-def parse_score(score_val) -> float:
-    """从 '8', '8.5', '8/10', 'Score: 8' 等格式中提取浮点数"""
-    if isinstance(score_val, (int, float)):
-        return float(score_val)
-    
-    s = str(score_val).strip()
-    # 尝试匹配数字部分 (例如从 "4.5/10" 提取 "4.5")
-    match = re.search(r"(\d+(\.\d+)?)", s)
-    if match:
-        try:
-            val = float(match.group(1))
-            # 防止提取到分母 (比如把 10 当成分数)，通常分数不会超过 10
-            # 如果提取到的数字 > 10 (例如 90分制)，归一化到 10分制
-            if val > 10: 
-                return val / 10.0
-            return val
-        except:
-            return 5.0 # 默认中位数
-    return 0.0
+# --- 辅助函数 ---
 
 def log_step(step_name: str, content: dict):
-    """格式化打印日志"""
     print(f"\n🚀 [Step: {step_name}]")
-    log_content = content.copy()
-    if "plan" in log_content:
-        log_content["plan"] = f"[DAG with {len(log_content['plan'])} tasks]"
-    print(json.dumps(log_content, indent=2, ensure_ascii=False, default=str))
+    try:
+        text = json.dumps(content, indent=2, ensure_ascii=False, default=str)
+        if len(text) > 2000:
+            print(text[:2000] + "\n... (truncated)")
+        else:
+            print(text)
+    except:
+        print(str(content)[:2000])
     print("-" * 50)
-
-def parse_critic_json(text: str) -> dict:
-    try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        return json.loads(text)
-    except:
-        return {"score": 5, "critique": "解析失败", "adjustment": "请补充数据"}
-
-def parse_dag_json(text: str) -> list:
-    try:
-        clean_text = text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_text)
-    except:
-        print(f"❌ JSON Parse Error in DAG: {text[:100]}...")
-        return []
-
-def cosine_similarity(v1, v2):
-    if not v1 or not v2: return 0.0
-    vec1 = np.array(v1)
-    vec2 = np.array(v2)
-    norm1 = np.linalg.norm(vec1)
-    norm2 = np.linalg.norm(vec2)
-    if norm1 == 0 or norm2 == 0: return 0.0
-    return np.dot(vec1, vec2) / (norm1 * norm2)
 
 # --- 节点逻辑 ---
 
-async def node_planner(state: ResearchState):
-    """[规划者] 集成语义去重熔断机制"""
-    print(f"--- [Planner] Scheduling Tasks (Model: {settings.MODEL_PLANNER}) ---")
-    dag = DAGManager(state["plan"])
-    model_to_use = settings.MODEL_PLANNER
+async def node_clarifier(state: ResearchState):
+    print("--- [Clarifier] Checking Ambiguity ---")
+    if state.get("clarified_intent"): return {}
+    prompt = prompts.clarification_check(state["task"])
+    response = await simple_llm_call(prompt, model=settings.MODEL_REASONING)
+    result = parse_json_safe(response)
     
-    # 1. 准备历史任务向量
-    history_descriptions = [
-        t.description for t in dag.tasks.values() 
-        if t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SKIPPED]
-    ]
-    history_vecs = []
-    if history_descriptions:
-        print(f"🧠 [Soft Limits] Loading vectors for {len(history_descriptions)} past tasks...")
-        history_vecs = [get_embedding(desc) for desc in history_descriptions]
+    if result and not result.get("is_clear", True):
+        assumptions = result.get("assumptions", "Default assumptions")
+        questions = result.get("questions", [])
+        print(f"⚠️ Ambiguity Detected: {questions}")
+        print(f"🤖 Auto-resolving: {assumptions}")
+        new_intent = f"{state['task']} (Context: {assumptions})"
+        return {"needs_clarification": True, "clarified_intent": new_intent, "clarification_history": questions}
+    return {"needs_clarification": False, "clarified_intent": state["task"]}
 
-    def filter_duplicate_tasks(new_tasks_list):
-        unique_tasks = []
-        for task in new_tasks_list:
-            desc = task.get("description", "")
-            if not desc: continue
-            if not history_vecs:
-                unique_tasks.append(task)
-                continue
-            new_vec = get_embedding(desc)
-            is_duplicate = False
-            for idx, h_vec in enumerate(history_vecs):
-                sim = cosine_similarity(new_vec, h_vec)
-                if sim > 0.85:
-                    print(f"🛑 [Circuit Breaker] Semantic Loop Detected (Sim: {sim:.2f})!")
-                    print(f"   Rejected Task: {desc}")
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                unique_tasks.append(task)
-        return unique_tasks
-
+async def node_planner(state: ResearchState):
+    print(f"--- [Planner] (Model: {settings.MODEL_REASONING}) ---")
+    dag = DAGManager(state["plan"])
+    model_to_use = settings.MODEL_REASONING
+    intent = state.get("clarified_intent", state["task"])
+    
+    # 1. 大纲生成
+    current_outline = state.get("outline", [])
+    if not current_outline:
+        print("📝 [Planner] Generating Research Outline...")
+        outline_resp = await simple_llm_call(prompts.outline_generation(state["task"], intent), model=model_to_use)
+        current_outline = parse_json_safe(outline_resp) or []
+        print(f"📑 Outline: {current_outline}")
+    
+    # 2. 任务生成
     has_feedback = False
-    new_tasks_raw = []
-
     if state["reflection_logs"]:
         last_log = state["reflection_logs"][-1]
-        if last_log["score"] < 8.0:
-            print(f"🔄 [Planner] Handling Critique: {last_log['critique'][:50]}...")
+        if last_log.get("score", 0) < 8.0:
+            print(f"🔄 [Planner] Replanning based on critique...")
             has_feedback = True
-            feedback_str = f"批评: {last_log['critique']}\n建议: {last_log['adjustment']}"
-            existing_plan_str = json.dumps(dag.to_state(), ensure_ascii=False)
-            prompt = ResearchPrompts.planner_dag_replanning(state["task"], existing_plan_str, feedback_str)
-            response = await simple_llm_call(prompt, model=model_to_use)
-            new_tasks_raw = parse_dag_json(response)
-
-    if not dag.tasks and not has_feedback:
-        print("📝 [Planner] Generating initial DAG plan...")
-        prompt = ResearchPrompts.planner_dag_generation(state["task"])
-        response = await simple_llm_call(prompt, model=model_to_use)
-        new_tasks_raw = parse_dag_json(response)
-
-    if new_tasks_raw:
-        print(f"🔍 [Soft Limits] Checking {len(new_tasks_raw)} new tasks for semantic loops...")
-        final_tasks = filter_duplicate_tasks(new_tasks_raw)
-        if len(final_tasks) < len(new_tasks_raw):
-            print(f"🛡️ [Soft Limits] Filtered out {len(new_tasks_raw) - len(final_tasks)} redundant tasks.")
-        for t in final_tasks:
-            try:
-                dag.add_task(t["id"], t["description"], t.get("dependencies", []))
-            except ValueError as e:
-                print(f"⚠️ Add task error: {e}")
-    else:
-        if has_feedback:
-            print("⚠️ [Planner] No new valid tasks generated after feedback.")
-
-    ready_tasks = dag.get_ready_tasks()
-    current_queries = []
-    for t in ready_tasks:
-        dag.set_task_running(t.id)
-        current_queries.append(t.description)
+            feedback_str = f"批评: {last_log.get('critique')}\n建议: {last_log.get('adjustment')}"
+            plan_str = json.dumps(dag.to_state(), ensure_ascii=False)
+            resp = await simple_llm_call(prompts.planner_dag_replanning(intent, plan_str, feedback_str), model=model_to_use)
+            new_tasks = parse_json_safe(resp) or []
+            # 防御性处理
+            if isinstance(new_tasks, list):
+                for t in new_tasks:
+                    if isinstance(t, dict) and "id" in t and "description" in t:
+                        dag.add_task(t["id"], t["description"], t.get("dependencies", []))
     
-    if current_queries:
-        print(f"🚀 [Planner] Dispatching {len(current_queries)} tasks")
-    else:
-        print(f"💤 [Planner] No ready tasks.")
+    if not dag.tasks and not has_feedback:
+        print("📝 [Planner] Generating Tasks from Outline...")
+        plan_str = json.dumps(dag.to_state(), ensure_ascii=False)
+        resp = await simple_llm_call(prompts.planner_tasks_from_outline(intent, current_outline, plan_str), model=model_to_use)
+        new_tasks = parse_json_safe(resp) or []
 
-    result = {"plan": dag.to_state(), "search_queries": current_queries}
-    log_step("Planner", result)
-    return result
+        # 防御性处理：确保 new_tasks 是字典列表
+        if isinstance(new_tasks, list):
+            valid_tasks = []
+            for t in new_tasks:
+                if isinstance(t, dict) and "id" in t and "description" in t:
+                    valid_tasks.append(t)
+                else:
+                    print(f"⚠️ [Planner] Skipping invalid task format: {t}")
+            for t in valid_tasks:
+                dag.add_task(t["id"], t["description"], dependencies=t.get("dependencies", []), related_section=t.get("related_section"))
+            
+    ready_tasks = dag.get_ready_tasks()
+    current_queries = [t.description for t in ready_tasks]
+    for t in ready_tasks: dag.set_task_running(t.id)
+    
+    log_step("Planner", {"outline": current_outline, "plan": dag.to_state()})
+    return {"outline": current_outline, "plan": dag.to_state(), "search_queries": current_queries}
 
 async def node_search_execute(state: ResearchState):
-    """[执行者] 鲁棒性增强版"""
+    print("🔄 [Search Node] Entered...", flush=True)
     dag = DAGManager(state["plan"])
     running_tasks = [t for t in dag.tasks.values() if t.status == TaskStatus.RUNNING]
     
     if not running_tasks:
+        print("⚠️ [Search Node] No running tasks found!")
         return {}
 
-    print(f"--- [Search] Parallel Execution: {len(running_tasks)} tasks ---")
+    print(f"--- [Search] Processing {len(running_tasks)} tasks ---", flush=True)
+    collected_docs = []
     
-    search_coros = []
-    for t in running_tasks:
-        async def safe_search(task_id, query):
-            try:
-                return await search_tool(query, settings.MAX_SEARCH_RESULTS)
-            except Exception as e:
-                print(f"❌ Task {task_id} hard failed: {e}")
-                return e 
-        search_coros.append(safe_search(t.id, t.description))
-
-    search_results_list = await asyncio.gather(*search_coros)
-    
-    crawl_coros = []
-    for res in search_results_list:
-        if isinstance(res, list) and res:
-            urls = [item["url"] for item in res]
-            crawl_coros.append(crawl_urls(urls))
-        else:
-            crawl_coros.append(asyncio.sleep(0))
-            
-    if crawl_coros:
-        crawl_results_list = await asyncio.gather(*crawl_coros)
-    else:
-        crawl_results_list = [[] for _ in running_tasks]
-
-    all_new_docs = []
-    for i, task in enumerate(running_tasks):
-        search_res = search_results_list[i]
-        if isinstance(search_res, Exception):
-            dag.fail_task(task.id, str(search_res))
+    for task in running_tasks:
+        print(f"🔍 Task: {task.description}")
+        try:
+            raw_results = await search_tool(task.description, num_results=settings.MAX_SEARCH_RESULTS)
+        except Exception as e:
+            dag.fail_task(task.id, str(e))
             continue
             
-        crawl_res = crawl_results_list[i] if i < len(crawl_results_list) else []
-        if isinstance(crawl_res, int): crawl_res = []
-
-        if crawl_res:
-            all_new_docs.extend(crawl_res)
-            dag.complete_task(task.id, result=f"Scraped {len(crawl_res)} pages.")
+        if not raw_results:
+            dag.complete_task(task.id, "No results found")
+            continue
+            
+        snippets = "\n".join([f"[{i}] {r['url']}\n    {r['snippet'][:100]}..." for i, r in enumerate(raw_results)])
+        select_resp = await simple_llm_call(prompts.search_result_selection(task.description, snippets, num_select=3), model=settings.MODEL_CHAT)
+        selected_urls = parse_json_safe(select_resp) or [r["url"] for r in raw_results[:3]]
+        
+        print(f"🎯 [Selector] Selected: {selected_urls}")
+        crawl_results = await crawl_urls(selected_urls)
+        
+        if crawl_results:
+            collected_docs.extend(crawl_results)
+            dag.complete_task(task.id, f"Scraped {len(crawl_results)} valid pages/files")
         else:
-            dag.complete_task(task.id, result="No content found.")
+            dag.complete_task(task.id, "No valid content retrieved")
 
-    if all_new_docs:
-        kb.add_documents(all_new_docs, task_id=state["task_id"])
+    if collected_docs:
+        kb.add_documents(collected_docs, task_id=state["task_id"])
+        print(f"💾 [Knowledge] Saved {len(collected_docs)} files.")
     
     dag.get_ready_tasks() 
+    return {"plan": dag.to_state(), "knowledge_stats": [f"Added {len(collected_docs)} docs"]}
 
-    return {"plan": dag.to_state(), "web_results": all_new_docs}
-
+# 🟢 核心修改：Analyst 节点 (一本一本读)
 async def node_analyst(state: ResearchState):
-    """[分析师] 使用写作模型 (MODEL_WRITER)"""
-    print(f"--- [Analyst] Thinking (Model: {settings.MODEL_WRITER}) ---")
-    topic = state["topic"]
-    model_to_use = settings.MODEL_WRITER
+    print(f"--- [Analyst] Incremental Reading (Model: {settings.MODEL_CHAT}) ---")
+    topic = state.get("clarified_intent", state["task"])
     
-    query = topic
-    if state["reflection_logs"]:
-        query += f" {state['reflection_logs'][-1]['adjustment']}"
+    # 1. 获取文件列表
+    files = kb.list_files(state["task_id"])
+    if not files:
+        return {"draft_report": "Error: No documents found to analyze."}
 
-    context = kb.search(query, task_id=state["task_id"], limit=15)
+    # 2. 初始化笔记
+    running_notes = "（暂无调研笔记，等待阅读第一份文档...）"
+    
+    print(f"📚 [Analyst] Found {len(files)} documents. Reading sequentially...")
+    
+    # 3. 逐个阅读 (For Loop)
+    for i, file_path in enumerate(files):
+        # 读取文件内容
+        doc_content = kb.read_file(file_path)
+        if not doc_content: continue
+        
+        # 截断单个文件内容，防止极个别超大文件溢出
+        if len(doc_content) > 100000:
+            doc_content = doc_content[:100000] + "\n...(file truncated)..."
 
-    # 🟢 鲁棒性增强：处理空搜索结果
-    # 防止 Prompt 接收空字符串导致幻觉
-    if not context or len(context.strip()) < 10:
-        print("⚠️ [Analyst] No valid context found in KnowledgeBase.")
-        context = (
-            "【系统警告】：本轮搜索未能获取有效互联网数据（可能是由于反爬虫限制或网络问题）。"
-            "请在报告中明确告知用户：'由于无法连接外部数据源，以下分析仅基于常识和逻辑推演，可能缺乏实时数据支撑。'"
-        )
-
-    prompt = ResearchPrompts.analyst_reasoning(topic, context)
+        print(f"📖 Reading Doc {i+1}/{len(files)}: {os.path.basename(file_path)} ({len(doc_content)} chars)")
+        
+        # 调用 LLM 更新笔记
+        prompt = prompts.analyst_incremental_reading(topic, running_notes, doc_content)
+        # 这一步可能会比较慢，但质量极高
+        running_notes = await simple_llm_call(prompt, model=settings.MODEL_CHAT)
     
-    raw_draft = await simple_llm_call(prompt, model=model_to_use)
+    print("✅ [Analyst] Reading complete. Generating Draft...")
     
-    print("🛡️ [Analyst] Running Fact Verification...")
-    verified_draft = await VerificationAgent.verify_report(raw_draft)
+    # 4. 基于最终笔记生成草稿
+    final_prompt = prompts.analyst_reasoning(topic, running_notes)
+    draft = await simple_llm_call(final_prompt, model=settings.MODEL_CHAT)
     
-    result = {"draft_report": verified_draft}
-    log_step("Analyst", result)
-    return result
+    # 5. 事实核查
+    verified = await VerificationAgent.verify_report(draft)
+    
+    return {"draft_report": verified}
 
 async def node_critic(state: ResearchState):
-    """[批评家] 使用批判模型 (MODEL_CRITIC)"""
-    print(f"--- [Critic] Reviewing (Model: {settings.MODEL_CRITIC}) ---")
-    topic = state["topic"]
-    draft = state["draft_report"]
-    model_to_use = settings.MODEL_CRITIC
+    print("--- [Critic] Reviewing ---")
+    topic = state.get("clarified_intent", state["task"])
+    draft = state.get("draft_report", "")
     
-    prompt = ResearchPrompts.critic_evaluation(topic, draft)
-    response = await simple_llm_call(prompt, model=model_to_use)
-    eval_data = parse_critic_json(response)
-    score_raw = eval_data.get("score", 0)
-    score = parse_score(score_raw)
+    prompt = prompts.critic_evaluation(topic, draft)
+    resp = await simple_llm_call(prompt, model=settings.MODEL_REASONING)
     
-    log: ReflectionLog = {
+    default_eval = {"score": 5, "critique": "Parsing failed", "adjustment": "Retry"}
+    eval_data = parse_json_safe(resp) or default_eval
+    
+    try: score = float(eval_data.get("score", 0))
+    except: score = 5.0
+
+    log = {
         "step_name": f"Iter-{state['iteration_count']}",
-        "critique": eval_data.get("critique", ""),
+        "critique": eval_data.get("critique"),
         "score": score,
-        "adjustment": eval_data.get("adjustment", "")
+        "adjustment": eval_data.get("adjustment")
     }
-    
-    result = {"reflection_logs": [log]}
-    log_step("Critic", result)
-    return result
+    return {"reflection_logs": [log], "iteration_count": state["iteration_count"] + 1}
 
 async def node_publisher(state: ResearchState):
-    """[出版者] 使用写作模型 (MODEL_WRITER)"""
-    print(f"--- [Publisher] (Model: {settings.MODEL_WRITER}) ---")
-    topic = state["topic"]
-    context = kb.search(topic, task_id=state["task_id"], limit=30) 
-    model_to_use = settings.MODEL_WRITER
+    print("--- [Publisher] Generating Final Report ---")
+    topic = state.get("clarified_intent", state["task"])
     
-    prompt = ResearchPrompts.publisher_final_report(topic, context)
-    final_report = await simple_llm_call(prompt, model=model_to_use)
-    save_markdown_report(topic, final_report)
-    kb.clear_task_data(state["task_id"])
+    # 获取 Analyst 生成并经过 Verification 的草稿
+    draft = state.get("draft_report", "")
+    
+    if not draft:
+        return {"final_report": "Error: No draft report generated."}
+
+    # Publisher 的工作是：格式化、润色、增加前言/目录
+    # 我们将 draft 作为核心上下文传给 LLM
+    prompt = prompts.publisher_final_report(topic, draft)
+    
+    final_report = await simple_llm_call(prompt, model=settings.MODEL_CHAT)
+    
+    # 保存
+    saved_path = save_markdown_report(state["task"], final_report)
+    if saved_path: 
+        print(f"✅ Report saved to: {saved_path}")
+    
     return {"final_report": final_report}
 
 # --- 路由逻辑 ---
+
 def route_planner(state: ResearchState) -> str:
+    print("🚦 [Router] Deciding next step after Planner...")
     dag = DAGManager(state["plan"])
-    running_tasks = [t for t in dag.tasks.values() if t.status == TaskStatus.RUNNING]
-    if running_tasks: return "searcher"
-    elif dag.is_all_completed(): return "analyst"
-    else: 
-        print("⚠️ [Router] No tasks running but DAG not complete. Moving to Analyst.")
+    running = [t for t in dag.tasks.values() if t.status == TaskStatus.RUNNING]
+    if running:
+        print(f"   -> Going to 'searcher' ({len(running)} tasks running)")
+        return "searcher"
+    if dag.is_all_completed():
+        print("   -> Going to 'analyst' (All tasks completed)")
         return "analyst"
+    print("   -> Fallback to 'analyst'")
+    return "analyst"
 
 def route_critic(state: ResearchState) -> str:
-    if state["iteration_count"] >= state["max_iterations"]: return "publish"
+    if state["iteration_count"] >= state["max_iterations"]:
+        print("🛑 Max iterations reached -> Publisher")
+        return "publisher"
+
+    # 防御性检查：防止 reflection_logs 为空
+    if not state.get("reflection_logs"):
+        print("⚠️ No reflection logs found -> Publisher")
+        return "publisher"
+
     last_log = state["reflection_logs"][-1]
-    if last_log["score"] >= 8.0: return "publish"
-    else: return "planner"
+    if last_log.get("score", 0) >= 7.5:
+        print("✅ Score >= 7.5 -> Publisher")
+        return "publisher"
+    print("🔄 Score low -> Back to Planner")
+    return "planner"
+
+# --- 构建图谱 ---
 
 def build_graph():
     workflow = StateGraph(ResearchState)
+    workflow.add_node("clarifier", node_clarifier)
     workflow.add_node("planner", node_planner)
     workflow.add_node("searcher", node_search_execute)
     workflow.add_node("analyst", node_analyst)
     workflow.add_node("critic", node_critic)
     workflow.add_node("publisher", node_publisher)
     
-    workflow.set_entry_point("planner")
+    workflow.set_entry_point("clarifier")
+    workflow.add_edge("clarifier", "planner")
     workflow.add_conditional_edges("planner", route_planner, {"searcher": "searcher", "analyst": "analyst"})
     workflow.add_edge("searcher", "planner")
     workflow.add_edge("analyst", "critic")
-    workflow.add_conditional_edges("critic", route_critic, {"planner": "planner", "publish": "publisher"})
+    workflow.add_conditional_edges("critic", route_critic, {"planner": "planner", "publisher": "publisher"})
     workflow.add_edge("publisher", END)
-
     return workflow

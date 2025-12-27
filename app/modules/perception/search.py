@@ -1,129 +1,196 @@
 # app/modules/perception/search.py
-import httpx
-import random
 import asyncio
+import functools
+import random
 from typing import List, Dict
-from itertools import cycle
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+# 🟢 引入成熟的开源库
+import arxiv
+from github import Github, Auth
+import wikipedia
 
 from app.core.config import settings
 
-# --- Key 管理器 ---
-class KeyManager:
-    """简单的 Key 轮询管理器"""
-    def __init__(self, keys: List[str]):
-        self.keys = keys
-        self._iterator = cycle(keys) if keys else None
-
-    def get_key(self) -> str:
-        if not self._iterator:
-            raise ValueError("No Tavily API keys configured!")
-        return next(self._iterator)
-
-# 初始化管理器
-tavily_key_manager = KeyManager(settings.TAVILY_API_KEYS)
-
-# --- 具体的实现函数 ---
-
-async def _search_searxng(query: str, num_results: int) -> List[Dict[str, str]]:
-    """SearXNG 搜索实现"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    params = {
-        "q": query,
-        "format": "json",
-        "engines": "google,bing,duckduckgo,wikipedia",
-        "language": "zh-CN",
-        "safesearch": "0"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(settings.SEARXNG_BASE_URL, params=params, headers=headers, timeout=15.0)
-        resp.raise_for_status()
-        data = resp.json()
+# --- 1. arXiv 搜索 (基于 arxiv 库) ---
+def _sync_arxiv_search(query: str, limit: int) -> List[Dict]:
+    """[同步] arXiv 搜索逻辑"""
+    print(f"📚 [arXiv] Searching: {query}...")
+    try:
+        # 构造搜索客户端
+        client = arxiv.Client()
+        search = arxiv.Search(
+            query=query,
+            max_results=limit,
+            sort_by=arxiv.SortCriterion.Relevance
+        )
         
         results = []
-        if "results" in data:
-            for item in data["results"][:num_results]:
-                if item.get("url", "").startswith("http"):
-                    results.append({
-                        "url": item["url"],
-                        "title": item.get("title", ""),
-                        "snippet": item.get("content", "")
-                    })
+        for r in client.results(search):
+            results.append({
+                "url": r.pdf_url, # 直接给 PDF 链接，配合我们的 PDF 解析器
+                "title": f"[arXiv] {r.title}",
+                "snippet": f"Published: {r.published.date()}\nAbstract: {r.summary[:500]}...",
+                "source": "arxiv"
+            })
         return results
+    except Exception as e:
+        print(f"⚠️ [arXiv] Error: {e}")
+        return []
 
-async def _search_tavily(query: str, num_results: int) -> List[Dict[str, str]]:
-    """Tavily 搜索实现 (支持多Key切换)"""
-    
-    # 获取当前 Key
-    api_key = tavily_key_manager.get_key()
-    
-    payload = {
-        "api_key": api_key,
-        "query": query,
-        "search_depth": "basic", # 或 "advanced" 用于更深度的搜索（更贵）
-        "include_answer": False,
-        "include_images": False,
-        "include_raw_content": False,
-        "max_results": num_results
-    }
-    
-    async with httpx.AsyncClient() as client:
-        # Tavily REST API
-        resp = await client.post("https://api.tavily.com/search", json=payload, timeout=15.0)
+async def _search_arxiv(query: str, limit: int = 3) -> List[Dict]:
+    """[异步包装] 放入线程池执行"""
+    if not settings.ENABLE_ARXIV: return []
+    return await asyncio.to_thread(_sync_arxiv_search, query, limit)
+
+
+# --- 2. GitHub 搜索 (基于 PyGithub 库) ---
+def _sync_github_search(query: str, limit: int) -> List[Dict]:
+    """[同步] GitHub 搜索逻辑"""
+    print(f"💻 [GitHub] Searching: {query}...")
+    try:
+        # 鉴权 (强烈建议配置 Token，否则限制极严)
+        auth = Auth.Token(settings.GITHUB_TOKEN) if settings.GITHUB_TOKEN else None
+        g = Github(auth=auth)
         
-        # 401/403 通常意味着 Key 额度用完或无效
-        if resp.status_code in [401, 403]:
-            print(f"⚠️ [Tavily] Key {api_key[:8]}... failed (Quota/Auth). Rotating key.")
-            # 抛出特定异常，虽然 Tenacity 会重试，但下次调用 KeyManager 会拿到新 Key
-            # (注意：上面的 get_key 是基于 cycle 的，所以下次调用函数时自然会拿到下一个)
-            resp.raise_for_status()
+        # 搜索仓库
+        repos = g.search_repositories(query=query, sort="stars", order="desc")
+        
+        results = []
+        # PyGithub 的分页是懒加载的，只取前 limit 个
+        for i, repo in enumerate(repos):
+            if i >= limit: break
             
-        resp.raise_for_status()
-        data = resp.json()
+            results.append({
+                "url": repo.html_url,
+                "title": f"[GitHub] {repo.full_name} ({repo.stargazers_count}⭐)",
+                "snippet": f"Language: {repo.language}\nDescription: {repo.description}\n(Readme will be crawled)",
+                "source": "github"
+            })
         
-        results = []
-        if "results" in data:
-            for item in data["results"]:
-                results.append({
-                    "url": item["url"],
-                    "title": item.get("title", ""),
-                    "snippet": item.get("content", "") # Tavily 返回的是 content
-                })
+        g.close()
         return results
+    except Exception as e:
+        print(f"⚠️ [GitHub] Error: {e}")
+        return []
 
-# --- 统一入口 ---
+async def _search_github(query: str, limit: int = 3) -> List[Dict]:
+    """[异步包装] 放入线程池执行"""
+    if not settings.ENABLE_GITHUB: return []
+    return await asyncio.to_thread(_sync_github_search, query, limit)
 
-# 定义重试策略：只重试网络类异常
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, ConnectionError)),
-    reraise=True
-)
+
+# --- 3. Wikipedia 搜索 (基于 wikipedia 库) ---
+def _sync_wiki_search(query: str, limit: int) -> List[Dict]:
+    """[同步] Wiki 搜索逻辑"""
+    print(f"📖 [Wiki] Searching: {query}...")
+    try:
+        # 优先尝试中文，若无结果可考虑回退英文 (此处简化为中文)
+        wikipedia.set_lang("zh")
+        
+        # 1. 搜索词条标题
+        search_results = wikipedia.search(query, results=limit)
+        if not search_results:
+            # 回退到英文
+            wikipedia.set_lang("en")
+            search_results = wikipedia.search(query, results=limit)
+            
+        final_results = []
+        for title in search_results:
+            try:
+                # 2. 获取词条详情
+                # auto_suggest=False 防止自动纠错导致搜到不相关的
+                page = wikipedia.page(title, auto_suggest=False)
+                
+                final_results.append({
+                    "url": page.url,
+                    "title": f"[Wiki] {page.title}",
+                    "snippet": page.summary[:500] + "...",
+                    "source": "wiki"
+                })
+            except wikipedia.DisambiguationError as e:
+                # 歧义页面，取第一个选项重试
+                try:
+                    page = wikipedia.page(e.options[0], auto_suggest=False)
+                    final_results.append({
+                        "url": page.url,
+                        "title": f"[Wiki] {page.title}",
+                        "snippet": page.summary[:500] + "...",
+                        "source": "wiki"
+                    })
+                except: pass
+            except wikipedia.PageError:
+                pass # 页面不存在
+                
+        return final_results
+    except Exception as e:
+        print(f"⚠️ [Wiki] Error: {e}")
+        return []
+
+async def _search_wiki(query: str, limit: int = 2) -> List[Dict]:
+    """[异步包装] 放入线程池执行"""
+    if not settings.ENABLE_WIKI: return []
+    return await asyncio.to_thread(_sync_wiki_search, query, limit)
+
+
+# --- 4. Web 搜索 (Tavily) - 支持多 Key 轮询 ---
+async def _search_web_tavily(query: str, limit: int) -> List[Dict]:
+    from app.core.config import settings
+    # 随机选择一个 API Key，实现负载均衡
+    api_key = random.choice(settings.TAVILY_API_KEYS) if settings.TAVILY_API_KEYS else None
+    if not api_key: return []
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                json={"api_key": api_key, "query": query, "max_results": limit, "search_depth": "basic"},
+                timeout=15.0
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return [{
+                "url": r["url"], 
+                "title": r["title"], 
+                "snippet": r["content"], 
+                "source": "web"
+            } for r in data.get("results", [])]
+    except Exception as e:
+        print(f"⚠️ [Web] Error: {e}")
+        return []
+
+
+# --- 5. 聚合入口 ---
 async def search_generic(query: str, num_results: int = 5) -> List[Dict[str, str]]:
     """
-    通用搜索入口：根据配置分发请求
+    [混合搜索 V2] 基于成熟 SDK 的并行搜索
     """
-    provider = settings.SEARCH_PROVIDER.lower()
+    print(f"🔍 [Hybrid Search] Dispatching: {query}...")
     
-    print(f"🔍 [Search] Requesting ({provider}): {query[:20]}...")
-
-    try:
-        if provider == "tavily":
-            return await _search_tavily(query, num_results)
-        elif provider == "searxng":
-            return await _search_searxng(query, num_results)
-        else:
-            print(f"⚠️ Unknown provider '{provider}', falling back to SearXNG")
-            return await _search_searxng(query, num_results)
+    # 定义任务：同时触发 4 路搜索
+    tasks = [
+        _search_arxiv(query, limit=settings.Result_Count_Arxiv),
+        _search_github(query, limit=settings.Result_Count_Github),
+        _search_wiki(query, limit=settings.Result_Count_Wiki),
+        _search_web_tavily(query, limit=settings.Result_Count_Web)
+    ]
+    
+    # 并发执行 (耗时取决于最慢的那个，通常是 Web 或 GitHub)
+    results_list = await asyncio.gather(*tasks)
+    
+    # 展平与去重
+    all_results = []
+    seen_urls = set()
+    
+    for res_group in results_list:
+        for r in res_group:
+            if r['url'] not in seen_urls:
+                seen_urls.add(r['url'])
+                all_results.append(r)
             
-    except Exception as e:
-        # 这里由 Tenacity 捕获并重试
-        print(f"❌ [Search] Error with {provider}: {e}")
-        raise e
+    print(f"✅ [Hybrid Search] Found {len(all_results)} total results")
+    return all_results
 
-# 保持接口兼容性，直接导出别名
-search_searxng = search_generic
+# 兼容导出
+search_tool = search_generic

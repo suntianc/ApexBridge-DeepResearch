@@ -255,3 +255,4 @@ override.yml
 # SearXNG config (if custom)
 searxng/
 *.xml
+data/
