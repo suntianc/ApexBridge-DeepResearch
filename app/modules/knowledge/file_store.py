@@ -24,10 +24,13 @@ class FileKnowledgeStore:
         content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()[:12]
         return f"doc_{content_hash}.md"
 
-    def add_documents(self, documents: List[Dict], task_id: str):
+    def add_documents(self, documents: List[Dict], task_id: str) -> List[str]:
+        """
+        保存文档并返回成功保存的文件路径列表
+        """
         task_dir = self._get_task_dir(task_id)
-        count = 0
-        
+        saved_paths: List[str] = []
+
         for doc in documents:
             content = doc.get("content", "")
             if len(content) < 50: continue
@@ -53,12 +56,14 @@ saved_at: {current_time}
             try:
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(md_content)
-                count += 1
+                saved_paths.append(filepath)
             except Exception as e:
                 print(f"❌ [FileStore] Write error: {e}")
 
-        if count > 0:
-            print(f"💾 [FileStore] Saved {count} new documents to {task_dir}")
+        if saved_paths:
+            print(f"💾 [FileStore] Saved {len(saved_paths)} new documents to {task_dir}")
+
+        return saved_paths
 
     # 🟢 补全缺失的方法：获取文件列表
     def list_files(self, task_id: str) -> List[str]:

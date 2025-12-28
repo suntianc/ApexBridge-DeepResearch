@@ -1,5 +1,5 @@
 # app/modules/orchestrator/state.py
-from typing import List, TypedDict, Annotated, Optional, Literal
+from typing import List, Dict, TypedDict, Annotated, Optional, Literal
 import operator
 
 # --- 基础数据模型 ---
@@ -52,3 +52,11 @@ class ResearchState(TypedDict):
     topic: str
     draft_report: str
     final_report: str
+
+    # --- 分章节报告 (chunked-section-reporting) ---
+    # 文件-章节映射表: { "docs/xxx.md": "1. 市场规模分析", "__general__": "综合报告" }
+    file_section_map: Dict[str, str]
+    # 分章节草稿: { "1. 市场规模分析": "本章节的内容...", "2. 技术架构": "..." }
+    section_drafts: Dict[str, str]
+    # 待写章节队列
+    pending_sections: List[str]

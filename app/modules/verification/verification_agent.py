@@ -73,7 +73,7 @@ class VerificationAgent:
         
         # 1. 获取上下文
         try:
-            results = await search_tool(f"verify {claim.claim}", num_results=3)
+            results = await search_tool(f"verify {claim.claim}")
             context = "\n".join([r["snippet"] for r in results]) if results else "No search results found."
         except Exception as e:
             print(f"⚠️ Search failed: {e}")
