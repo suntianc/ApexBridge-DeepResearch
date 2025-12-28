@@ -18,11 +18,20 @@ router = APIRouter()
 workflow_builder = build_graph()
 
 @router.get("/stream")
-async def stream_research(topic: str):
-    # 生成唯一会话 ID
-    thread_id = str(uuid.uuid4())
-    task_id = thread_id
-    
+async def stream_research(topic: str, thread_id: str = None):
+    """
+    流式深度研究接口
+
+    Args:
+        topic: 研究主题
+        thread_id: 可选参数，支持断点续传。
+                  - 首次请求：不传此参数，系统自动生成新的 thread_id
+                  - 续传请求：传入之前返回的 thread_id，可恢复之前的会话状态
+    """
+    # 如果前端未提供 thread_id，则生成新的 UUID
+    thread_id = thread_id or str(uuid.uuid4())
+    task_id = thread_id  # task_id 同步使用 thread_id
+
     config = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": settings.MAX_RECURSION_LIMIT

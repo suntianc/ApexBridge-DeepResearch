@@ -1,5 +1,6 @@
 # app/modules/insight/prompts.py
 from textwrap import dedent
+from typing import List, Dict
 
 class ResearchPrompts:
     """
@@ -111,6 +112,38 @@ class ResearchPrompts:
             ]
         """).strip()
 
+    @staticmethod
+    def planner_section_retry(focus_section: str, feedback: str) -> str:
+        """[规划者] 针对特定章节补充搜索任务"""
+        return dedent(f"""
+            你是一个敏捷的项目经理。我们对某章节的初步研究收到了批评反馈，需要补充调研。
+
+            【问题章节】：{focus_section}
+
+            【批评与建议】：
+            {feedback}
+
+            【任务】：
+            请生成 **1-3 个精准的搜索任务**，专门补充该章节缺失的信息。
+
+            【要求】：
+            1. 任务必须直接解决 Critic 指出的问题
+            2. 任务描述要具体，包含具体的搜索意图
+            3. 新任务的 ID 必须全局唯一，建议使用 "fix_section_{{序号}}" 格式
+               例如：fix_section_1, fix_section_2（不要重复使用已存在的 ID）
+
+            【输出格式】：
+            严格返回 JSON 列表：
+            [
+                {{
+                    "id": "fix_section_1",
+                    "description": "搜索 2024 年 {focus_section} 相关数据报告",
+                    "dependencies": [],
+                    "related_section": "{focus_section}"
+                }}
+            ]
+        """).strip()
+
     # ==================== Searcher (搜索者) ====================
 
     @staticmethod
@@ -131,6 +164,37 @@ class ResearchPrompts:
         """).strip()
 
     # ==================== Analyst (分析师) ====================
+
+    @staticmethod
+    def analyst_section_writing(section_title: str, existing_draft: str, new_document: str) -> str:
+        """[分析师] 分章节增量写作"""
+        return dedent(f"""
+            你正在撰写一份深度研究报告的**特定章节**。
+
+            【当前章节标题】：{section_title}
+
+            【目前该章节的草稿】：
+            ---------------------
+            {existing_draft if existing_draft else "(暂无草稿)"}
+            ---------------------
+
+            【新读入的参考文档】：
+            ---------------------
+            {new_document}
+            ---------------------
+
+            【任务】：
+            请根据新文档的内容，**扩充、修正或完善**当前章节的草稿。
+
+            【要求】：
+            1. **聚焦**：只提取与"{section_title}"直接相关的信息。
+            2. **细节保留**：保留数据、案例、技术参数等细节。
+            3. **引用**：必须在引用处保留 `[Source: url]` 标记。
+            4. **增量更新**：不要删除草稿中已有的有价值信息，除非新证据证明其错误。
+            5. **输出完整草稿**：返回完整的、可以直接使用的章节内容。
+
+            请直接输出更新后的完整章节草稿：
+        """).strip()
 
     @staticmethod
     def analyst_incremental_reading(topic: str, existing_notes: str, new_document: str) -> str:
@@ -165,6 +229,39 @@ class ResearchPrompts:
         """).strip()
 
     @staticmethod
+    def analyst_merge_sections(topic: str, outline: List[str], section_drafts: Dict[str, str]) -> str:
+        """[分析师] 拼装各章节成完整报告"""
+        drafts_text = ""
+        for title in outline:
+            content = section_drafts.get(title, "（暂无内容）")
+            drafts_text += f"## {title}\n\n{content}\n\n"
+
+        return dedent(f"""
+            你是一位专业的技术报告编辑。请将各章节草稿拼装成一份完整、流畅的研究报告。
+
+            【研究主题】：{topic}
+
+            【研究大纲】：
+            {outline}
+
+            【各章节草稿】：
+            =========================================
+            {drafts_text}
+            =========================================
+
+            【任务】：
+            1. **结构检查**：确保所有大纲章节都有对应内容
+            2. **连贯性**：在各章节之间增加过渡句，使报告整体流畅
+            3. **一致性**：统一术语、格式、引用风格
+            4. **补充前言**：添加执行摘要和研究背景
+
+            【输出要求】：
+            - 直接输出完整的 Markdown 报告
+            - 不要添加额外的解释或说明
+            - 保持所有原始引用标记
+        """).strip()
+
+    @staticmethod
     def analyst_reasoning(topic: str, context: str) -> str:
         """[分析师] RAG 分析与 Gap 识别 (适用于 DeepSeek R1)"""
         return dedent(f"""
@@ -186,13 +283,22 @@ class ResearchPrompts:
     # ==================== Critic (批评家) ====================
 
     @staticmethod
-    def critic_evaluation(topic: str, draft: str) -> str:
-        """[批评家] 评估草稿质量与幻觉"""
+    def critic_evaluation(topic: str, draft: str, section_drafts: dict = None) -> str:
+        """[批评家] 评估草稿质量与幻觉 - 支持按章节反馈"""
+        # 构建章节摘要（如果提供了）
+        sections_info = ""
+        if section_drafts:
+            sections_info = "\n【各章节草稿预览】：\n"
+            for title, content in section_drafts.items():
+                content_preview = content[:500] + "..." if len(content) > 500 else content
+                sections_info += f"\n## {title}\n{content_preview}\n"
+
         return dedent(f"""
             你是一个严谨的学术审稿人。请评估关于 '{topic}' 的研究草稿。
 
             【待评草稿】：
             {draft}
+            {sections_info}
 
             【评估标准】：
             1. **数据支撑 (30分)**: 是否有具体的数字、日期、实体？(空泛的描述扣分)
@@ -202,10 +308,12 @@ class ResearchPrompts:
 
             【输出要求】：
             请严格按照以下 JSON 格式输出（不要输出 Markdown 代码块，直接输出 JSON）：
-            {{
+ {{
                 "score": <0-10分，总分/10>,
                 "critique": "<具体的批评意见，指出哪里缺数据，哪里逻辑不通>",
-                "adjustment": "<给规划者的具体建议，例如：'搜索X公司的财报'，'查找Y技术的原理图'>"
+                "adjustment": "<给规划者的具体建议，例如：'搜索X公司的财报'，'查找Y技术的原理图'>",
+                "focus_section": "<如果问题在特定章节，写章节标题；否则写 null>",
+                "reason": "<问题归类：insufficient_data | writing_quality | logic_issue | unknown>"
             }}
         """).strip()
 
@@ -361,6 +469,29 @@ class ResearchPrompts:
                 "winner": "Affirmative" | "Negative" | "Uncertain",
                 "conclusion": "最终认定的事实结论",
                 "reasoning": "判决理由"
+            }}
+        """).strip()
+    @staticmethod
+    def search_query_optimization(task_description: str) -> str:
+        """[搜索者] 将自然语言任务转换为各平台的专用搜索词"""
+        return dedent(f"""
+            你是一个搜索专家。请根据用户的研究任务，为不同的搜索平台生成**最优化的搜索关键词**。
+            
+            【原始任务】："{task_description}"
+            
+            【转换规则】：
+            1. **ArXiv** (学术论文): 必须翻译成**英文**，使用学术术语。去掉"2024"等时间限制（论文库可能搜不到最新的），只搜核心概念。
+            2. **GitHub** (开源代码): 必须翻译成**英文**，关注框架、工具、Dataset、Awesome列表。
+            3. **Wikipedia** (百科全书): 提取核心**实体名词**（Entity），尽量短，不要句子。
+            4. **Web** (通用搜索): 可以保留中文，或者是经过优化的组合关键词（如 "Market size filetype:pdf"）。
+            
+            【输出格式】：
+            严格返回 JSON 对象：
+            {{
+                "arxiv": "Mobile AI Agent optimization",
+                "github": "mobile-agent-framework",
+                "wiki": "Intelligent agent",
+                "web": "2024 全球移动端AI Agent 市场规模 报告 filetype:pdf"
             }}
         """).strip()
 

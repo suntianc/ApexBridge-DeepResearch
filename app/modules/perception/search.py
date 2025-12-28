@@ -1,10 +1,12 @@
 # app/modules/perception/search.py
 import asyncio
-import functools
 import random
+import re
 from typing import List, Dict
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from app.core.llm import simple_llm_call
+from app.core.utils import parse_json_safe
+from app.modules.insight.prompts import prompts
 
 # 🟢 引入成熟的开源库
 import arxiv
@@ -12,6 +14,33 @@ from github import Github, Auth
 import wikipedia
 
 from app.core.config import settings
+
+# --- 0. 查询翻译兜底策略 ---
+# 中文停用词列表（搜索时移除这些词以提高检索精度）
+_QUERY_STOPWORDS = {
+    "分析", "研究", "报告", "市场", "全球", "中国", "行业", "趋势",
+    "调研", "深度", "全面", "最新", "2023", "2024", "2025"
+}
+
+def _fallback_query_translate(query: str) -> str:
+    """
+    规则化翻译：中文 -> 英文关键词
+    当 LLM 重写失败时，使用此规则引擎生成英文搜索词
+    """
+    # 移除停用词
+    words = [w for w in query.split() if w not in _QUERY_STOPWORDS]
+    # 简单处理：移除常见的中文修饰词，保留核心名词
+    cleaned = " ".join(words)
+    # 如果结果仍为中文，尝试简单的关键词提取（取前 5 个词）
+    if re.search(r'[\u4e00-\u9fff]', cleaned):
+        # 尝试保留技术术语和核心实体
+        keywords = []
+        for word in words:
+            # 跳过纯中文词（可能是通用词）
+            if len(word) > 3 and not all('\u4e00' <= c <= '\u9fff' for c in word):
+                keywords.append(word)
+        cleaned = " ".join(keywords[:5]) if keywords else query
+    return cleaned
 
 # --- 1. arXiv 搜索 (基于 arxiv 库) ---
 def _sync_arxiv_search(query: str, limit: int) -> List[Dict]:
@@ -162,27 +191,55 @@ async def _search_web_tavily(query: str, limit: int) -> List[Dict]:
 
 
 # --- 5. 聚合入口 ---
-async def search_generic(query: str, num_results: int = 5) -> List[Dict[str, str]]:
+async def search_generic(query: str) -> List[Dict[str, str]]:
     """
-    [混合搜索 V2] 基于成熟 SDK 的并行搜索
+    [混合搜索 V2] 智能查询重写 + 并行搜索
     """
-    print(f"🔍 [Hybrid Search] Dispatching: {query}...")
-    
-    # 定义任务：同时触发 4 路搜索
+    print(f"🤔 [Hybrid Search] Optimizing query: {query}...")
+
+    # --- A. 调用 LLM 进行查询重写 (Query Rewriting) ---
+    # 使用 MODEL_CHAT (快速模型) 即可，不需要推理模型
+    try:
+        rewrite_prompt = prompts.search_query_optimization(query)
+        # 这里建议用 MODEL_FAST 或 MODEL_CHAT，追求速度
+        resp = await simple_llm_call(rewrite_prompt, model=settings.MODEL_CHAT)
+        optimized_queries = parse_json_safe(resp)
+    except Exception as e:
+        print(f"⚠️ Query optimization failed: {e}, falling back to raw query.")
+        optimized_queries = None
+
+    # --- B. 准备各平台的查询词 ---
+    # 如果重写失败，使用规则引擎兜底
+    if optimized_queries is None:
+        print("🔄 [Search] LLM optimization failed, using rule-based fallback...")
+        translated_query = _fallback_query_translate(query)
+        q_arxiv = translated_query
+        q_github = translated_query
+        q_wiki = _fallback_query_translate(query)  # Wiki 也尝试翻译
+        q_web = query  # Web 搜索保留中文
+    else:
+        q_arxiv = optimized_queries.get("arxiv", query)
+        q_github = optimized_queries.get("github", query)
+        q_wiki = optimized_queries.get("wiki", query)
+        q_web = optimized_queries.get("web", query)
+
+    print(f"🚀 [Dispatching] \n   - ArXiv: {q_arxiv}\n   - GitHub: {q_github}\n   - Wiki: {q_wiki}\n   - Web: {q_web}")
+
+    # --- C. 并发执行 ---
     tasks = [
-        _search_arxiv(query, limit=settings.Result_Count_Arxiv),
-        _search_github(query, limit=settings.Result_Count_Github),
-        _search_wiki(query, limit=settings.Result_Count_Wiki),
-        _search_web_tavily(query, limit=settings.Result_Count_Web)
+        # 传入各自优化后的关键词
+        _search_arxiv(q_arxiv, limit=settings.Result_Count_Arxiv),
+        _search_github(q_github, limit=settings.Result_Count_Github),
+        _search_wiki(q_wiki, limit=settings.Result_Count_Wiki),
+        # Web 搜索通常最强，使用优化后的 Web 关键词
+        _search_web_tavily(q_web, limit=settings.Result_Count_Web)
     ]
     
-    # 并发执行 (耗时取决于最慢的那个，通常是 Web 或 GitHub)
     results_list = await asyncio.gather(*tasks)
     
-    # 展平与去重
+    # ... (后续的展平、去重逻辑保持不变) ...
     all_results = []
     seen_urls = set()
-    
     for res_group in results_list:
         for r in res_group:
             if r['url'] not in seen_urls:

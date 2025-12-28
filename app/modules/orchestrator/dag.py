@@ -41,20 +41,34 @@ class DAGManager:
         return [task.model_dump(mode='json') for task in self.tasks.values()]
 
     def add_task(self, id: str, description: str, dependencies: List[str] = None, related_section: str = None):
-        if id in self.tasks:
-            if self.tasks[id].status == TaskStatus.PENDING:
-                 self.tasks[id].description = description
-                 self.tasks[id].dependencies = dependencies or []
-                 # 🟢 支持更新关联章节
-                 if related_section:
-                     self.tasks[id].related_section = related_section
-            return
-        
+        """
+        添加任务，自动处理 ID 碰撞
+        如果 ID 已存在，追加数字后缀确保唯一性
+        """
+        original_id = id
+        counter = 1
+        final_id = id
+
+        # 🟢 ID 防碰撞机制
+        while final_id in self.tasks:
+            # 如果 ID 已存在，检查状态
+            if self.tasks[final_id].status == TaskStatus.PENDING:
+                # 更新现有任务（而不是创建重复任务）
+                self.tasks[final_id].description = description
+                self.tasks[final_id].dependencies = dependencies or []
+                if related_section:
+                    self.tasks[final_id].related_section = related_section
+                return
+            else:
+                # 已完成/失败的任务，生成新 ID
+                final_id = f"{original_id}_{counter}"
+                counter += 1
+
         deps = dependencies or []
         # 🟢 传入 related_section
-        self.tasks[id] = ResearchTask(
-            id=id, 
-            description=description, 
+        self.tasks[final_id] = ResearchTask(
+            id=final_id,
+            description=description,
             dependencies=deps,
             related_section=related_section
         )

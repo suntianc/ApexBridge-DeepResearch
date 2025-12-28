@@ -19,13 +19,28 @@ except ImportError:
 # 全局 OCR 引擎单例 (懒加载)
 _ocr_engine = None
 
+# 关键词触发器：包含这些关键词的页面即使超过 15 页也需要 OCR
+OCR_KEYWORD_TRIGGERS = [
+    "财务", "营收", "利润", "收入", "市场份额", "增长", "Table", "Figure",
+    "附录", "附注", "资产负债表", "现金流量表", "利润表", "财务数据",
+    "analysis", "revenue", "profit", "income", "balance sheet", "cash flow"
+]
+
 def get_ocr_engine():
     global _ocr_engine
     if _ocr_engine is None and PADDLE_AVAILABLE:
         print("👁️ [System] Loading PaddleOCR Model (This may take time)...")
         # use_angle_cls=True 自动纠正方向, lang="ch" 支持中英文
-        _ocr_engine = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+        _ocr_engine = PaddleOCR(use_angle_cls=True, lang="ch")
     return _ocr_engine
+
+def _page_needs_ocr(text: str) -> bool:
+    """判断页面是否可能包含需要 OCR 的关键信息（基于关键词）"""
+    if len(text.strip()) >= 50:
+        return False
+    # 检查是否包含财务关键词
+    text_lower = text.lower()
+    return any(kw.lower() in text_lower for kw in OCR_KEYWORD_TRIGGERS)
 
 def process_pdf_sync(pdf_bytes: bytes, url: str) -> str:
     """
@@ -53,9 +68,14 @@ def process_pdf_sync(pdf_bytes: bytes, url: str) -> str:
         text = page.get_text()
         
         # 2. 密度检测：如果文字极少，判定为扫描件/图片
-        if len(text.strip()) < 50 and PADDLE_AVAILABLE:
-            if i < MAX_OCR_PAGES:
-                print(f"   🔍 [OCR] Page {i+1}/{total_pages} is image-based. Scanning...")
+        needs_ocr = len(text.strip()) < 50 and PADDLE_AVAILABLE
+        # 关键词触发：即使超过 15 页，包含关键信息的页面仍需 OCR
+        keyword_trigger = _page_needs_ocr(text) if not needs_ocr else needs_ocr
+
+        if needs_ocr:
+            if i < MAX_OCR_PAGES or keyword_trigger:
+                trigger_note = " (keyword triggered)" if keyword_trigger else ""
+                print(f"   🔍 [OCR] Page {i+1}/{total_pages} is image-based{trigger_note}. Scanning...")
                 try:
                     # 渲染为高分辨率图片 (zoom=2) 提升识别率
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
@@ -88,7 +108,9 @@ def process_pdf_sync(pdf_bytes: bytes, url: str) -> str:
                 except Exception as e:
                     print(f"⚠️ [OCR] Failed on page {i+1}: {e}")
             else:
-                text = "\n[OCR Skipped: Page limit reached]\n"
+                # 只有非关键词触发的页面才跳过 OCR
+                if not keyword_trigger:
+                    text = "\n[OCR Skipped: Page limit reached]\n"
         
         full_text.append(text)
     
